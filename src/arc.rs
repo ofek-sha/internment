@@ -356,7 +356,7 @@ impl<T: ?Sized + Eq + Hash + Send + Sync> Pointer for ArcIntern<T> {
 /// hash of the pointer with hash of the data itself.
 impl<T: ?Sized + Eq + Hash + Send + Sync> Hash for ArcIntern<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.get_pointer().hash(state);
+        std::ptr::hash(self.get_pointer() as *const (), state);
     }
 }
 
