@@ -45,7 +45,7 @@ arc = ["ahash", "dashmap", "once_cell"]
 bench = ["arc", "arc-interner", "arena", "memorable-wordlist", "append-only-vec"]
 arena = []
 intern = []
-default = ["intern"]
+default = ["arc", "serde"]
 
 [dev-dependencies]
 quickcheck = "^0.9.2"

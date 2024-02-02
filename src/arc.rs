@@ -1,5 +1,5 @@
-#![deny(missing_docs)]
 use ahash::RandomState;
+use bstr::{BStr, BString, ByteSlice};
 use std::any::{Any, TypeId};
 use std::fmt::{Debug, Display, Pointer};
 type Container<T> = DashMap<BoxRefCount<T>, (), RandomState>;
@@ -44,16 +44,16 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// ```
 #[cfg_attr(docsrs, doc(cfg(feature = "arc")))]
 pub struct ArcIntern<T: ?Sized + Eq + Hash + Send + Sync + 'static> {
-    pub(crate) pointer: std::ptr::NonNull<RefCount<T>>,
+    pub pointer: std::ptr::NonNull<RefCount<T>>,
 }
 
 unsafe impl<T: ?Sized + Eq + Hash + Send + Sync> Send for ArcIntern<T> {}
 unsafe impl<T: ?Sized + Eq + Hash + Send + Sync> Sync for ArcIntern<T> {}
 
 #[derive(Debug)]
-pub(crate) struct RefCount<T: ?Sized> {
-    pub(crate) count: AtomicUsize,
-    pub(crate) data: T,
+pub struct RefCount<T: ?Sized> {
+    pub count: AtomicUsize,
+    pub data: T,
 }
 
 impl<T: ?Sized + Eq> Eq for RefCount<T> {}
@@ -69,7 +69,7 @@ impl<T: ?Sized + Hash> Hash for RefCount<T> {
 }
 
 #[derive(Eq, PartialEq)]
-pub(crate) struct BoxRefCount<T: ?Sized>(pub Box<RefCount<T>>);
+pub struct BoxRefCount<T: ?Sized>(pub Box<RefCount<T>>);
 impl<T: ?Sized + Hash> Hash for BoxRefCount<T> {
     fn hash<H: Hasher>(&self, hasher: &mut H) {
         self.0.data.hash(hasher)
@@ -92,6 +92,21 @@ impl<T: ?Sized> Borrow<RefCount<T>> for BoxRefCount<T> {
         &self.0
     }
 }
+impl Borrow<BStr> for BoxRefCount<BString> {
+    fn borrow(&self) -> &BStr {
+        self.0.data.as_bstr()
+    }
+}
+impl Borrow<[u8]> for BoxRefCount<BString> {
+    fn borrow(&self) -> &[u8] {
+        self.0.data.as_ref()
+    }
+}
+impl Borrow<str> for BoxRefCount<String> {
+    fn borrow(&self) -> &str {
+        self.0.data.as_ref()
+    }
+}
 impl<T: ?Sized> Deref for BoxRefCount<T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
@@ -103,7 +118,7 @@ impl<T: ?Sized + Eq + Hash + Send + Sync + 'static> ArcIntern<T> {
     fn get_pointer(&self) -> *const RefCount<T> {
         self.pointer.as_ptr()
     }
-    pub(crate) fn get_container() -> &'static Container<T> {
+    pub fn get_container() -> &'static Container<T> {
         use once_cell::sync::OnceCell;
         static ARC_CONTAINERS: OnceCell<DashMap<TypeId, Untyped, RandomState>> = OnceCell::new();
 
@@ -147,10 +162,33 @@ impl<T: ?Sized + Eq + Hash + Send + Sync + 'static> ArcIntern<T> {
     pub fn from_ref<'a, Q: ?Sized + Eq + Hash + 'a>(val: &'a Q) -> ArcIntern<T>
     where
         T: Borrow<Q> + From<&'a Q>,
+        BoxRefCount<T>: Borrow<Q>,
     {
-        // No reference only fast-path as
-        // the trait `std::borrow::Borrow<Q>` is not implemented for `Arc<T>`
-        Self::new(val.into())
+        loop {
+            let m = Self::get_container();
+            if let Some(b) = m.get_mut(&val) {
+                let b = b.key();
+                // First increment the count.  We are holding the write mutex here.
+                // Has to be the write mutex to avoid a race
+                let oldval = b.0.count.fetch_add(1, Ordering::SeqCst);
+                if oldval != 0 {
+                    // we can only use this value if the value is not about to be freed
+                    return ArcIntern {
+                        pointer: std::ptr::NonNull::from(b.0.borrow()),
+                    };
+                } else {
+                    // we have encountered a race condition here.
+                    // we will just wait for the object to finish
+                    // being freed.
+                    b.0.count.fetch_sub(1, Ordering::SeqCst);
+                }
+            } else {
+                return Self::new(val.into());
+            }
+            // yield so that the object can finish being freed,
+            // and then we will be able to intern a new copy.
+            std::thread::yield_now();
+        }
     }
     /// See how many objects have been interned.  This may be helpful
     /// in analyzing memory use.
@@ -160,6 +198,10 @@ impl<T: ?Sized + Eq + Hash + Send + Sync + 'static> ArcIntern<T> {
     /// Return the number of counts for this pointer.
     pub fn refcount(&self) -> usize {
         unsafe { self.pointer.as_ref().count.load(Ordering::Acquire) }
+    }
+    /// Shrinks underlying container's memory to only fit the currently contained items
+    pub fn shrink_to_fit() {
+        Self::get_container().shrink_to_fit();
     }
 
     /// Only for benchmarking, this will cause problems
@@ -320,7 +362,7 @@ impl<T: ?Sized + Eq + Hash + Send + Sync> Hash for ArcIntern<T> {
 
 impl<T: ?Sized + Eq + Hash + Send + Sync> PartialEq for ArcIntern<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.get_pointer() == other.get_pointer()
+        std::ptr::addr_eq(self.get_pointer(), other.get_pointer())
     }
 }
 impl<T: ?Sized + Eq + Hash + Send + Sync> Eq for ArcIntern<T> {}

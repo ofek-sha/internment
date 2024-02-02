@@ -344,7 +344,7 @@ impl<T: Eq + Hash + Send + Sync + ?Sized> Hash for Intern<T> {
 
 impl<T: Eq + Hash + Send + Sync + ?Sized> PartialEq for Intern<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.get_pointer() == other.get_pointer()
+        std::ptr::addr_eq(self.get_pointer(), other.get_pointer())
     }
 }
 impl<T: Eq + Hash + Send + Sync + ?Sized> Eq for Intern<T> {}

@@ -1,4 +1,4 @@
-#![deny(missing_docs)]
+#![allow(dead_code)]
 // Copyright 2018,2020 David Roundy
 //
 // Licensed under the Apache License, Version 2.0, <LICENSE-APACHE or
